@@ -40,6 +40,8 @@ APIgraph(Enhancing State-of-the-art Classifiers with API Semantics to
 
 再次声明：本项目严禁用于任何恶意行为，包括但不限于绕过检测、制作恶意软件、非法传播等。一切法律责任与使用者无关。
 感谢所有开源前辈与数据提供方！
+## 数据准备说明
+该项目中的download.py是下载AndroZoo的代码，若要从别的数据库下载，请重新实现此模块。使用AndroZoo前先与管理者取得联系，获取api密钥，更改download.py中的密钥并且把latest.csv文件放入根目录中
 ## 项目结构说明
 首先该项目包含两大模块，APIgraph和derbin，根目录下的download.py是用来自动下载apk的脚本，model.py则是对最后获得的vector里面的向量进行建模。
 decompile_apks是用来存放download_apks中的apk使用apktools反编译之后的产物
