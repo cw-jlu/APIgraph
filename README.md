@@ -43,6 +43,7 @@ APIgraph(Enhancing State-of-the-art Classifiers with API Semantics to
 ## 数据准备说明
 该项目中的download.py是下载AndroZoo的代码，若要从别的数据库下载，请重新实现此模块。使用AndroZoo前先与管理者取得联系，获取api密钥，更改download.py中的密钥并且把latest.csv文件放入根目录中
 ## 环境配置说明
+Linux环境下的那一部分可能会有环境冲突，我自己写的只要把import的包全部install即可
 ## 你可能需要修改的地方
 | 文件 | 变量 / 位置 | 含义 | 示例值 | 备注 |
 |---|---|---|---|---|
@@ -104,4 +105,5 @@ APIgraph/                              # 项目根目录
     ├── auto_extract.py                # 批量提取多年前 Drebin 向量
     ├── (原 classify.py 逻辑已合并进 model.py)
     └── 其他文件/  
+
 
