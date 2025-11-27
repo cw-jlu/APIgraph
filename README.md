@@ -44,22 +44,32 @@ APIgraph(Enhancing State-of-the-art Classifiers with API Semantics to
 该项目中的download.py是下载AndroZoo的代码，若要从别的数据库下载，请重新实现此模块。使用AndroZoo前先与管理者取得联系，获取api密钥，更改download.py中的密钥并且把latest.csv文件放入根目录中
 ## 环境配置说明
 ## 你可能需要修改的地方
-1.auto_extract.py中的years
-2.batch_decompile.py的最后面的需要反编译的路径，你可以根据需要增加或者减少
-3.check_vector.py的被检查的向量        X_mal = load(r'vectors/graph_vector\mal_2016.npy')        ；       X_ben = load(r'vectors/graph_vector\ben_2016.npy')
-4.smali_extractor.py最后需要被提取向量的反编译文件路径，你可以根据需要增加或者减少
-5.download.py中的下载年份，下载数量，线程数，阈值，密钥等
-6.model.py中的训练年份和测试年份，模型参数等
-7.可能还有一些我没注意到的地方，主要是路径和参数可能需要修改
+| 文件 | 变量 / 位置 | 含义 | 示例值 | 备注 |
+|---|---|---|---|---|
+| **auto_extract.py** | `years` | 要提取的年份列表 | `[2015, 2016, 2017]` | 按需增减 |
+| **batch_decompile.py** | 末尾 `apk_dirs` | 待反编译的 APK 目录 | `[r'D:\data\2016', r'D:\data\2017']` | 支持批量 |
+| **check_vector.py** | `X_mal` | 恶意软件向量路径 | `load(r'vectors/graph_vector\mal_2016.npy')` | 年份 / 文件名保持同步 |
+|  | `X_ben` | 正常软件向量路径 | `load(r'vectors/graph_vector\ben_2016.npy')` | 同上 |
+| **smali_extractor.py** | 末尾 `decompile_root` | 反编译结果根目录 | `r'D:\decompiled\2016'` | 与 2. 保持一致 |
+| **download.py** | `YEARS` | 下载年份 | `[2016]` | 可多选 |
+|  | `PER_YEAR` | 每年下载量 | `2000` |  |
+|  | `THREADS` | 并发线程 | `16` |  |
+|  | `THRESHOLD` | 病毒总分阈值 | `5` | VT 用 |
+|  | `API_KEY` | VirusTotal 密钥 | `'yourkey'` | 支持列表循环 |
+| **model.py** | `TRAIN_YEARS` | 训练集年份 | `[2015, 2016]` |  |
+|  | `TEST_YEARS` | 测试集年份 | `[2017]` |  |
+|  | `PARAMS` | 模型超参 | 见下方代码块 | 直接搜 `PARAMS = {` |
+
+可能还有一些我没注意到的地方，主要是路径和参数可能需要修改
 ## 项目结构说明
-首先该项目包含两大模块，APIgraph和derbin，根目录下的download.py是用来自动下载apk的脚本，model.py则是对最后获得的vector里面的向量进行建模。
-decompile_apks是用来存放download_apks中的apk使用apktools反编译之后的产物
-result_models是存放最后保存的模型文件
-结果图片是保存最后结果，即model.py画的图
+  首先该项目包含两大模块，APIgraph和derbin，根目录下的download.py是用来自动下载apk的脚本，model.py则是对最后获得的vector里面的向量进行建模。
+  decompile_apks是用来存放download_apks中的apk使用apktools反编译之后的产物。
+  result_models是存放最后保存的模型文件。
+  结果图片是保存最后结果，即model.py画的图。
 
-APIgraph：APIgraph目录下是基于原先的GitHub仓库我增加了一些东西，原先的仓库之提供了四个文件，在linux环境或者wsl上跑按执行顺序是getAllEntities.py（获取所有实体也就是每个节点，读取一些api文档api_json之类的东西）——getAllRelations.py（把每个节点的关系链接起来）——TransE.py（训练脚本，生成向量，产出res/method_entity_embedding_TransE.pkl）——clusterEmbedding.py（读上一步的 .pkl，做 K-means，产出res/method_cluster_mapping_2000.pkl）后面的为我们新增的文件都在windows环境下跑即可——map2000.py（抽查结果看看是否正常）——batch_decompile.py（调用apktool反编译下载的download_apk文件，获取smali文件）——smali_extractor.py（提取smali中的信息，然后把其运用TransE中的方法转化成向量）——check_vector.py（检查生成的向量看其是否能很好的映射到生成的map上，即两者提取的特征的交集大不大）——若无误后生成的这些npy文件就可以运用到model.py中进行训练，最终数据保存在vectors/graph_vector
+  APIgraph：APIgraph目录下是基于原先的GitHub仓库我增加了一些东西，原先的仓库之提供了四个文件，在linux环境或者wsl上跑按执行顺序是getAllEntities.py（获取所有实体也就是每个节点，读取一些api文档api_json之类的东西）——getAllRelations.py（把每个节点的关系链接起来）——TransE.py（训练脚本，生成向量，产出res/method_entity_embedding_TransE.pkl）——clusterEmbedding.py（读上一步的 .pkl，做 K-means，产出res/method_cluster_mapping_2000.pkl）后面的为我们新增的文件都在windows环境下跑即可——map2000.py（抽查结果看看是否正常）——batch_decompile.py（调用apktool反编译下载的download_apk文件，获取smali文件）——smali_extractor.py（提取smali中的信息，然后把其运用TransE中的方法转化成向量）——check_vector.py（检查生成的向量看其是否能很好的映射到生成的map上，即两者提取的特征的交集大不大）——若无误后生成的这些npy文件就可以运用到model.py中进行训练，最终数据保存在vectors/graph_vector
 
-Derbin：原提供的feature_vector_extraction.py和classify.py都因为一些依赖太老（大概十年前的论文），而逐渐不可用，所以我重构了一下，classify.py的逻辑我放到了model.py中并且做了一些小的修改，而extraction_new.py和auto_extract.py则是对feature_vector_extraction.py的替代物，大体逻辑相同，做了一些小的修改，auto_extract.py主要是一个多次执行extraction_new.py的脚本，因为我们所需要的download_apk数据可能不只一年，最终我们得到了没有使用图，没有使用聚类的npy文件，特征向量，在vectors/direct_vector中
+  Derbin：原提供的feature_vector_extraction.py和classify.py都因为一些依赖太老（大概十年前的论文），而逐渐不可用，所以我重构了一下，classify.py的逻辑我放到了model.py中并且做了一些小的修改，而extraction_new.py和auto_extract.py则是对feature_vector_extraction.py的替代物，大体逻辑相同，做了一些小的修改，auto_extract.py主要是一个多次执行extraction_new.py的脚本，因为我们所需要的download_apk数据可能不只一年，最终我们得到了没有使用图，没有使用聚类的npy文件，特征向量，在vectors/direct_vector中
 
 
 ## 项目结构
@@ -94,3 +104,4 @@ APIgraph/                              # 项目根目录
     ├── auto_extract.py                # 批量提取多年前 Drebin 向量
     ├── (原 classify.py 逻辑已合并进 model.py)
     └── 其他文件/  
+
