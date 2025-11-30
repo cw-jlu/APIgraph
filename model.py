@@ -8,223 +8,364 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 
+# ================= 全局配置（根据需求修改）=================
 rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans']
 rcParams['axes.unicode_minus'] = False
-DIRECT_VECTOR_DIR = "vectors/direct_vector"
-GRAPH_VECTOR_DIR = "vectors/graph_vector"
-TEST_YEAR = 2022
-TRAIN_YEARS = [2016, 2017, 2018, 2019, 2020, 2021]
+# 
+CONFIG = {
+    "train_years": ["2016", "2017", "2018", "2019"],  # 训练集年份（字符串格式）
+    "test_years": ["2020", "2021", "2022"],           # 测试集年份（字符串格式，按年评估）
+    "data_root_no": r"D:\APIgraph\vectors\direct_vector",       # 无Graph特征根目录（包含train/test子目录）
+    "data_root_graph": r"D:\APIgraph\vectors\graph_vector",  # 有Graph特征根目录（无train/test区分）
+    "out_root": r"D:\APIgraph\output",  # 结果图片输出目录
+    "vector_prefix": {"mal": "mal_", "ben": "ben_"}    # 向量文件前缀（恶意：mal_xxx.npy，良性：be_xxx.npy）
+}
 
-svm_params = {'kernel': 'linear', 'C': 1.0, 'class_weight': 'balanced', 'probability': True, 'random_state': 42}
-rf_params = {'n_estimators': 300, 'class_weight': 'balanced', 'random_state': 42, 'n_jobs': -1}
+# 模型超参数
+MODEL_PARAMS = {
+    'svm': {'kernel': 'linear', 'C': 1.0, 'class_weight': 'balanced', 'probability': True, 'random_state': 42},
+    'rf': {'n_estimators': 300, 'class_weight': 'balanced', 'random_state': 42, 'n_jobs': -1}
+}
 
+# 选择默认模型（这里选集成模型ENS，可改为SVM/RF）
+DEFAULT_MODEL = 'ENS'
 
-def load_and_align(dir_path, year, kind="mal", target_dim=6486):
-    path = os.path.join(dir_path, f"{kind}_{year}.npy")
-    if not os.path.exists(path):
-        print(f"   [警告] 缺失: {path}")
-        return np.zeros((0, target_dim), dtype=np.uint8)
-    vec = np.load(path)
-    if vec.shape[1] >= target_dim:
-        return vec[:, :target_dim]
-    else:
-        pad = np.zeros((vec.shape[0], target_dim - vec.shape[1]), dtype=np.uint8)
-        return np.hstack([vec, pad])
+# ================= 工具函数 =================
+def load_vector_with_split(dir_path, year, kind, data_split):
+    """
+    加载无Graph特征向量（需区分train/test子目录）
+    :param dir_path: 无Graph特征根目录（含train/test）
+    :param year: 年份（字符串）
+    :param kind: 样本类型（mal/ben）
+    :param data_split: 数据类型（train/test）
+    :return: 特征向量数组
+    """
+    # 路径：data_root_no/split/前缀_年份.npy（如：D:\xxx\train\mal_2016.npy）
+    prefix = CONFIG["vector_prefix"][kind]
+    file_path = os.path.join(dir_path, data_split, f"{prefix}{year}.npy")
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"无Graph特征文件不存在：{file_path}")
+    vec = np.load(file_path)
+    print(f"加载无Graph[{data_split}]：{file_path} | 样本数：{vec.shape[0]} | 维度：{vec.shape[1]}")
+    return vec
 
+def load_vector_no_split(dir_path, year, kind):
+    """
+    加载有Graph特征向量（无train/test区分）
+    :param dir_path: 有Graph特征根目录
+    :param year: 年份（字符串）
+    :param kind: 样本类型（mal/ben）
+    :return: 特征向量数组
+    """
+    prefix = CONFIG["vector_prefix"][kind]
+    file_path = os.path.join(dir_path, f"{prefix}{year}.npy")
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"有Graph特征文件不存在：{file_path}")
+    vec = np.load(file_path)
+    print(f"加载有Graph：{file_path} | 样本数：{vec.shape[0]} | 维度：{vec.shape[1]}")
+    return vec
 
-# 确定基准维度
-print("正在确定基准维度（2016年）")
-dim_2016 = load_and_align(DIRECT_VECTOR_DIR, 2016, "mal").shape[1]
-print("加载并对齐 2022 测试集...")
-X_test_dre = np.vstack([
-    load_and_align(DIRECT_VECTOR_DIR, TEST_YEAR, "mal", dim_2016),
-    load_and_align(DIRECT_VECTOR_DIR, TEST_YEAR, "ben", dim_2016)
-])
-y_test_dre = np.concatenate([
-    np.ones(load_and_align(DIRECT_VECTOR_DIR, TEST_YEAR, "mal", dim_2016).shape[0]),
-    np.zeros(load_and_align(DIRECT_VECTOR_DIR, TEST_YEAR, "ben", dim_2016).shape[0])
-])
+def prepare_train_data():
+    """
+    准备联合训练集（两种特征分别拼接所有训练年份）
+    :return: (X_train_no, y_train_no) 无Graph训练集；(X_train_graph, y_train_graph) 有Graph训练集
+    """
+    print("\n===== 准备训练集（年份：{}）=====".format(",".join(CONFIG["train_years"])))
+    
+    # ---------------- 无Graph特征训练集（需区分train子目录）----------------
+    X_train_no_mal = []
+    X_train_no_ben = []
+    for year in CONFIG["train_years"]:
+        # 加载该年份训练集的恶意/良性样本
+        mal_vec = load_vector_with_split(CONFIG["data_root_no"], year, "mal", "train")
+        ben_vec = load_vector_with_split(CONFIG["data_root_no"], year, "ben", "train")
+        X_train_no_mal.append(mal_vec)
+        X_train_no_ben.append(ben_vec)
+    
+    # 拼接所有训练年份
+    X_train_no_mal = np.vstack(X_train_no_mal) if X_train_no_mal else np.array([])
+    X_train_no_ben = np.vstack(X_train_no_ben) if X_train_no_ben else np.array([])
+    X_train_no = np.vstack([X_train_no_mal, X_train_no_ben]) if (X_train_no_mal.size and X_train_no_ben.size) else np.array([])
+    y_train_no = np.concatenate([
+        np.ones(X_train_no_mal.shape[0]),
+        np.zeros(X_train_no_ben.shape[0])
+    ])
+    
+    # ---------------- 有Graph特征训练集（无train/test区分）----------------
+    X_train_graph_mal = []
+    X_train_graph_ben = []
+    for year in CONFIG["train_years"]:
+        mal_vec = load_vector_no_split(CONFIG["data_root_graph"], year, "mal")
+        ben_vec = load_vector_no_split(CONFIG["data_root_graph"], year, "ben")
+        X_train_graph_mal.append(mal_vec)
+        X_train_graph_ben.append(ben_vec)
+    
+    X_train_graph_mal = np.vstack(X_train_graph_mal) if X_train_graph_mal else np.array([])
+    X_train_graph_ben = np.vstack(X_train_graph_ben) if X_train_graph_ben else np.array([])
+    X_train_graph = np.vstack([X_train_graph_mal, X_train_graph_ben]) if (X_train_graph_mal.size and X_train_graph_ben.size) else np.array([])
+    y_train_graph = np.concatenate([
+        np.ones(X_train_graph_mal.shape[0]),
+        np.zeros(X_train_graph_ben.shape[0])
+    ])
+    
+    # 输出训练集统计
+    print(f"\n无Graph训练集：{X_train_no.shape[0]}个样本 | 维度：{X_train_no.shape[1]}")
+    print(f"有Graph训练集：{X_train_graph.shape[0]}个样本 | 维度：{X_train_graph.shape[1]}")
+    
+    return (X_train_no, y_train_no), (X_train_graph, y_train_graph)
 
-X_test_graph = np.vstack([
-    np.load(os.path.join(GRAPH_VECTOR_DIR, f"mal_{TEST_YEAR}.npy")),
-    np.load(os.path.join(GRAPH_VECTOR_DIR, f"ben_{TEST_YEAR}.npy"))
-])
-y_test_graph = np.concatenate([
-    np.ones(np.load(os.path.join(GRAPH_VECTOR_DIR, f"mal_{TEST_YEAR}.npy")).shape[0]),
-    np.zeros(np.load(os.path.join(GRAPH_VECTOR_DIR, f"ben_{TEST_YEAR}.npy")).shape[0])
-])
+def prepare_test_year_data(year):
+    """
+    准备单个测试年份的数据集（两种特征）
+    :param year: 测试年份（字符串）
+    :return: (X_test_no, y_test_no) 无Graph测试集；(X_test_graph, y_test_graph) 有Graph测试集
+    """
+    print(f"\n===== 准备测试年份 {year} 的数据集 =====")
+    
+    # ---------------- 无Graph特征测试集（需区分test子目录）----------------
+    X_test_no_mal = load_vector_with_split(CONFIG["data_root_no"], year, "mal", "test")
+    X_test_no_ben = load_vector_with_split(CONFIG["data_root_no"], year, "ben", "test")
+    X_test_no = np.vstack([X_test_no_mal, X_test_no_ben])
+    y_test_no = np.concatenate([
+        np.ones(X_test_no_mal.shape[0]),
+        np.zeros(X_test_no_ben.shape[0])
+    ])
+    
+    # ---------------- 有Graph特征测试集（无train/test区分）----------------
+    X_test_graph_mal = load_vector_no_split(CONFIG["data_root_graph"], year, "mal")
+    X_test_graph_ben = load_vector_no_split(CONFIG["data_root_graph"], year, "ben")
+    X_test_graph = np.vstack([X_test_graph_mal, X_test_graph_ben])
+    y_test_graph = np.concatenate([
+        np.ones(X_test_graph_mal.shape[0]),
+        np.zeros(X_test_graph_ben.shape[0])
+    ])
+    
+    print(f"无Graph测试集：{X_test_no.shape[0]}个样本 | 有Graph测试集：{X_test_graph.shape[0]}个样本")
+    return (X_test_no, y_test_no), (X_test_graph, y_test_graph)
 
-print(f"测试集就绪 → Drebin {X_test_dre.shape} | APIgraph {X_test_graph.shape}\n")
-
-print("单一年份的训练")
-def train_eval(model, X_tr, y_tr, X_te, y_te):
-    if X_tr.shape[0] == 0 or X_tr.shape[1] == 0:
-        return 0.0, 0.0, 0.0, 0.0
-    model.fit(X_tr, y_tr)
-    pred = model.predict(X_te)
+def train_eval_model(model, X_train, y_train, X_test, y_test):
+    """训练模型并返回4个指标"""
+    if X_train.shape[0] == 0 or X_test.shape[0] == 0:
+        print("警告：训练集或测试集为空，返回全0指标")
+        return (0.0, 0.0, 0.0, 0.0)
+    
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    
     return (
-        accuracy_score(y_te, pred),
-        f1_score(y_te, pred, average='binary', zero_division=0),
-        precision_score(y_te, pred, average='binary', zero_division=0),
-        recall_score(y_te, pred, average='binary', zero_division=0)
+        accuracy_score(y_test, y_pred),
+        f1_score(y_test, y_pred, average='binary', zero_division=0),
+        precision_score(y_test, y_pred, average='binary', zero_division=0),
+        recall_score(y_test, y_pred, average='binary', zero_division=0)
     )
 
+# ================= 主实验流程 =================
+def main():
+    # 1. 创建结果目录
+    os.makedirs(CONFIG["out_root"], exist_ok=True)
+    print(f"结果图片保存至：{CONFIG['out_root']}")
+    
+    # 2. 准备训练集（两种特征）
+    (X_train_no, y_train_no), (X_train_graph, y_train_graph) = prepare_train_data()
+    
+    # 3. 初始化默认模型（按CONFIG选择）
+    print(f"\n===== 初始化模型：{DEFAULT_MODEL} =====")
+    if DEFAULT_MODEL == 'SVM':
+        model_no = SVC(**MODEL_PARAMS['svm'])
+        model_graph = SVC(**MODEL_PARAMS['svm'])
+    elif DEFAULT_MODEL == 'RF':
+        model_no = RandomForestClassifier(**MODEL_PARAMS['rf'])
+        model_graph = RandomForestClassifier(**MODEL_PARAMS['rf'])
+    elif DEFAULT_MODEL == 'ENS':
+        model_no = VotingClassifier(
+            estimators=[('svm', SVC(**MODEL_PARAMS['svm'])), ('rf', RandomForestClassifier(**MODEL_PARAMS['rf']))],
+            voting='soft'
+        )
+        model_graph = VotingClassifier(
+            estimators=[('svm', SVC(**MODEL_PARAMS['svm'])), ('rf', RandomForestClassifier(**MODEL_PARAMS['rf']))],
+            voting='soft'
+        )
+    else:
+        raise ValueError("默认模型仅支持 SVM/RF/ENS")
+    
+    # 4. 评估训练集性能（可选，用于对比）
+    print("\n===== 评估训练集性能 =====")
+    train_metrics_no = train_eval_model(model_no, X_train_no, y_train_no, X_train_no, y_train_no)
+    train_metrics_graph = train_eval_model(model_graph, X_train_graph, y_train_graph, X_train_graph, y_train_graph)
+    print(f"无Graph训练集 - 准确率：{train_metrics_no[0]:.4f} | F1：{train_metrics_no[1]:.4f}")
+    print(f"有Graph训练集 - 准确率：{train_metrics_graph[0]:.4f} | F1：{train_metrics_graph[1]:.4f}")
+    
+    # 5. 按年份评估测试集性能
+    print("\n===== 按年份评估测试集性能 =====")
+    test_results = {
+        '无Graph': {'准确率': [], 'F1值': [], '精确率': [], '召回率': []},
+        '有Graph': {'准确率': [], 'F1值': [], '精确率': [], '召回率': []}
+    }
+    test_years = CONFIG["test_years"]
+    
+    for year in test_years:
+        # 准备该年份测试集
+        (X_test_no, y_test_no), (X_test_graph, y_test_graph) = prepare_test_year_data(year)
+        
+        # 评估无Graph模型
+        metrics_no = train_eval_model(model_no, X_train_no, y_train_no, X_test_no, y_test_no)
+        test_results['无Graph']['准确率'].append(metrics_no[0])
+        test_results['无Graph']['F1值'].append(metrics_no[1])
+        test_results['无Graph']['精确率'].append(metrics_no[2])
+        test_results['无Graph']['召回率'].append(metrics_no[3])
+        
+        # 评估有Graph模型
+        metrics_graph = train_eval_model(model_graph, X_train_graph, y_train_graph, X_test_graph, y_test_graph)
+        test_results['有Graph']['准确率'].append(metrics_graph[0])
+        test_results['有Graph']['F1值'].append(metrics_graph[1])
+        test_results['有Graph']['精确率'].append(metrics_graph[2])
+        test_results['有Graph']['召回率'].append(metrics_graph[3])
+        
+        # 输出该年份结果
+        print(f"\n{year}年测试结果：")
+        print(f"无Graph - 准确率：{metrics_no[0]:.4f} | F1：{metrics_no[1]:.4f} | 精确率：{metrics_no[2]:.4f} | 召回率：{metrics_no[3]:.4f}")
+        print(f"有Graph - 准确率：{metrics_graph[0]:.4f} | F1：{metrics_graph[1]:.4f} | 精确率：{metrics_graph[2]:.4f} | 召回率：{metrics_graph[3]:.4f}")
+    
+    # 6. 整理训练集结果（用于绘图）
+    train_results = {
+        '无Graph': {'准确率': train_metrics_no[0], 'F1值': train_metrics_no[1], '精确率': train_metrics_no[2], '召回率': train_metrics_no[3]},
+        '有Graph': {'准确率': train_metrics_graph[0], 'F1值': train_metrics_graph[1], '精确率': train_metrics_graph[2], '召回率': train_metrics_graph[3]}
+    }
+    
+    # 7. 绘图（训练集+测试集各年份的有无Graph对比）
+    plot_comparison(train_results, test_results, test_years)
+    print(f"\n实验完成！所有图表已保存至：{CONFIG['out_root']}")
 
-res = {
-    'single': {'drebin': {'SVM': [], 'RF': [], 'ENS': []}, 'graph': {'SVM': [], 'RF': [], 'ENS': []}},
-    'cum': {'drebin': {'SVM': [], 'RF': [], 'ENS': []}, 'graph': {'SVM': [], 'RF': [], 'ENS': []}}
-}
-
-
-for year in TRAIN_YEARS:
-    print(f"\n仅用 {year} 年训练")
-
-    # Drebin
-    mal = load_and_align(DIRECT_VECTOR_DIR, year, "mal", dim_2016)
-    ben = load_and_align(DIRECT_VECTOR_DIR, year, "ben", dim_2016)
-    X_tr = np.vstack([mal, ben])
-    y_tr = np.concatenate([np.ones(mal.shape[0]), np.zeros(ben.shape[0])])
-    X_te = X_test_dre  # 已经对齐过
-
-    svm = SVC(**svm_params)
-    rf = RandomForestClassifier(**rf_params)
-    ens = VotingClassifier(estimators=[('svm', SVC(**svm_params)), ('rf', RandomForestClassifier(**rf_params))],
-                           voting='soft')
-
-    acc_svm, f1_svm, _, _ = train_eval(svm, X_tr, y_tr, X_te, y_test_dre)
-    acc_rf, f1_rf, _, _ = train_eval(rf, X_tr, y_tr, X_te, y_test_dre)
-    acc_ens, f1_ens, _, _ = train_eval(ens, X_tr, y_tr, X_te, y_test_dre)
-
-    res['single']['drebin']['SVM'].append(acc_svm)
-    res['single']['drebin']['RF'].append(acc_rf)
-    res['single']['drebin']['ENS'].append(acc_ens)
-
-    print(f"   Drebin   | SVM: {acc_svm:.4f}  RF: {acc_rf:.4f}  ENS: {acc_ens:.4f}")
-
-    # APIgraph
-    mal_g = np.load(os.path.join(GRAPH_VECTOR_DIR, f"mal_{year}.npy"))
-    ben_g = np.load(os.path.join(GRAPH_VECTOR_DIR, f"ben_{year}.npy"))
-    X_g = np.vstack([mal_g, ben_g])
-    y_g = np.concatenate([np.ones(mal_g.shape[0]), np.zeros(ben_g.shape[0])])
-
-    acc_svm, f1_svm, _, _ = train_eval(svm, X_g, y_g, X_test_graph, y_test_graph)
-    acc_rf, f1_rf, _, _ = train_eval(rf, X_g, y_g, X_test_graph, y_test_graph)
-    acc_ens, f1_ens, _, _ = train_eval(ens, X_g, y_g, X_test_graph, y_test_graph)
-
-    res['single']['graph']['SVM'].append(acc_svm)
-    res['single']['graph']['RF'].append(acc_rf)
-    res['single']['graph']['ENS'].append(acc_ens)
-
-    print(f"   APIgraph | SVM: {acc_svm:.4f}  RF: {acc_rf:.4f}  ENS: {acc_ens:.4f}")
-print("开始 累加训练模式（统一2016维度）")
-
-cum_X_dre = None
-cum_y_dre = None
-cum_X_g = None
-cum_y_g = None
-
-for year in TRAIN_YEARS:
-    print(f"\n从2016开始累加至 {year} 年")
-
-    #无graph的累加训练
-    mal = load_and_align(DIRECT_VECTOR_DIR, year, "mal", dim_2016)
-    ben = load_and_align(DIRECT_VECTOR_DIR, year, "ben", dim_2016)
-    X_year = np.vstack([mal, ben])
-    y_year = np.concatenate([np.ones(mal.shape[0]), np.zeros(ben.shape[0])])
-
-    cum_X_dre = X_year if cum_X_dre is None else np.vstack([cum_X_dre, X_year])
-    cum_y_dre = y_year if cum_y_dre is None else np.concatenate([cum_y_dre, y_year])
-
-    acc_svm, _, _, _ = train_eval(SVC(**svm_params), cum_X_dre, cum_y_dre, X_test_dre, y_test_dre)
-    acc_rf, _, _, _ = train_eval(RandomForestClassifier(**rf_params), cum_X_dre, cum_y_dre, X_test_dre, y_test_dre)
-    acc_ens, _, _, _ = train_eval(
-        VotingClassifier(estimators=[('svm', SVC(**svm_params)), ('rf', RandomForestClassifier(**rf_params))],
-                         voting='soft'),
-        cum_X_dre, cum_y_dre, X_test_dre, y_test_dre)
-
-    res['cum']['drebin']['SVM'].append(acc_svm)
-    res['cum']['drebin']['RF'].append(acc_rf)
-    res['cum']['drebin']['ENS'].append(acc_ens)
-    print(f"   Drebin   | SVM: {acc_svm:.4f}  RF: {acc_rf:.4f}  ENS: {acc_ens:.4f}")
-
-    # APIgraph 累加
-    mal_g = np.load(os.path.join(GRAPH_VECTOR_DIR, f"mal_{year}.npy"))
-    ben_g = np.load(os.path.join(GRAPH_VECTOR_DIR, f"ben_{year}.npy"))
-    X_year_g = np.vstack([mal_g, ben_g])
-    y_year_g = np.concatenate([np.ones(mal_g.shape[0]), np.zeros(ben_g.shape[0])])
-    cum_X_g = X_year_g if cum_X_g is None else np.vstack([cum_X_g, X_year_g])
-    cum_y_g = y_year_g if cum_y_g is None else np.concatenate([cum_y_g, y_year_g])
-
-    acc_svm, _, _, _ = train_eval(SVC(**svm_params), cum_X_g, cum_y_g, X_test_graph, y_test_graph)
-    acc_rf, _, _, _ = train_eval(RandomForestClassifier(**rf_params), cum_X_g, cum_y_g, X_test_graph, y_test_graph)
-    acc_ens, _, _, _ = train_eval(
-        VotingClassifier(estimators=[('svm', SVC(**svm_params)), ('rf', RandomForestClassifier(**rf_params))],
-                         voting='soft'),
-        cum_X_g, cum_y_g, X_test_graph, y_test_graph)
-
-    res['cum']['graph']['SVM'].append(acc_svm)
-    res['cum']['graph']['RF'].append(acc_rf)
-    res['cum']['graph']['ENS'].append(acc_ens)
-    print(f"   APIgraph | SVM: {acc_svm:.4f}  RF: {acc_rf:.4f}  ENS: {acc_ens:.4f}")
-
-# 创建图片文件夹
-os.makedirs("结果图片", exist_ok=True)
-
-# 指标中英文对照
-metrics = [
-    ("Accuracy",     "准确率"),
-    ("F1-Score",     "F1值"),
-    ("Precision",    "精确率"),
-    ("Recall",       "召回率")
-]
-
-modes = [
-    ('single', '单年训练'),
-    ('cum',    '累加训练')
-]
-#颜色不一样
-styles = {
-    'drebin': {'SVM': ('#d62728', '-',   'o'),
-               'RF':  ('#ff7f0e', '--',  'v'),
-               'ENS': ('#8c564b', '-.',  'D')},
-    'graph':  {'SVM': ('#1f77b4', '-',   's'),
-               'RF':  ('#2ca02c', '--',  '^'),
-               'ENS': ('#9467bd', '-.',  'P')}
-}
-for mode_key, mode_name in modes:
-    for eng_name, chn_name in metrics:
-        plt.figure(figsize=(11, 7))
-        idx = {"Accuracy":0, "F1-Score":1, "Precision":2, "Recall":3}[eng_name]
-        all_vals = []
-
-        # 画六条线
-        for feat, feat_name in [('drebin', '无Graph'), ('graph', '有Graph')]:
-            for clf in ['SVM', 'RF', 'ENS']:
-                values = []
-                for item in res[mode_key][feat][clf]:
-                    values.append(item[idx] if isinstance(item, tuple) else item)
-                all_vals.extend(values)
-
-                color, ls, marker = styles[feat][clf]
-                label = f"{feat_name} ({clf})"
-                plt.plot(TRAIN_YEARS, values,
-                         color=color, linestyle=ls, marker=marker,
-                         linewidth=3.5, markersize=10, markeredgewidth=2,
-                         label=label)
-
-        #裁剪空白
-        ymin, ymax = min(all_vals), max(all_vals)
-        margin = (ymax - ymin) * 0.12
-        plt.ylim(max(0.55, ymin - margin), min(1.0, ymax + margin))
-        plt.title(f'{chn_name}对比 —— {mode_name}\n（以2022年为测试集）', fontsize=20, pad=25, fontweight='bold')
-        plt.xlabel('训练数据截止年份', fontsize=16)
-        plt.ylabel(chn_name, fontsize=16)
-        plt.xticks(TRAIN_YEARS, fontsize=13)
-        plt.yticks(fontsize=13)
-        plt.grid(True, alpha=0.4, linestyle=':', linewidth=1.2)
-        plt.legend(fontsize=14, framealpha=0.98, fancybox=True, shadow=True, loc='lower right')
+# ================= 结果可视化（修复f-string报错）=================
+def plot_comparison(train_results, test_results, test_years):
+    """
+    绘制对比图：每个指标一张图，包含：
+    - 训练集：无Graph vs 有Graph（单个柱状图）
+    - 测试集：各年份无Graph vs 有Graph（折线图+标记点）
+    """
+    metrics = [
+        ("准确率", 0),
+        ("F1值", 1),
+        ("精确率", 2),
+        ("召回率", 3)
+    ]
+    # 绘图样式
+    styles = {
+        '无Graph': {'color': '#d62728', 'marker': 'o', 'line': '-', 'train_color': '#ff9999'},
+        '有Graph': {'color': '#1f77b4', 'marker': 's', 'line': '--', 'train_color': '#99ccff'}
+    }
+    
+    # 修复：用字符串拼接替代f-string换行（兼容所有Python3版本）
+    train_years_str = ",".join(CONFIG['train_years'])
+    train_label = "训练集\n(" + train_years_str + ")"  # 避免f-string换行
+    
+    # 所有x轴标签（训练集 + 测试集年份）
+    all_x_labels = [train_label] + test_years
+    # 训练集在x轴的位置（0），测试集年份位置（1,2,3...）
+    train_x_pos = 0
+    test_x_pos = list(range(1, len(test_years)+1))
+    
+    for metric_name, _ in metrics:
+        plt.figure(figsize=(12, 7))
+        
+        # ---------------- 绘制训练集对比（柱状图）----------------
+        # 无Graph训练集
+        plt.bar(
+            train_x_pos - 0.15,  # 左移0.15避免重叠
+            train_results['无Graph'][metric_name],
+            width=0.3,
+            color=styles['无Graph']['train_color'],
+            label='无Graph（训练集）',
+            edgecolor=styles['无Graph']['color'],
+            linewidth=2
+        )
+        # 有Graph训练集
+        plt.bar(
+            train_x_pos + 0.15,  # 右移0.15避免重叠
+            train_results['有Graph'][metric_name],
+            width=0.3,
+            color=styles['有Graph']['train_color'],
+            label='有Graph（训练集）',
+            edgecolor=styles['有Graph']['color'],
+            linewidth=2
+        )
+        
+        # ---------------- 绘制测试集对比（折线图+标记点）----------------
+        # 无Graph测试集
+        plt.plot(
+            test_x_pos,
+            test_results['无Graph'][metric_name],
+            color=styles['无Graph']['color'],
+            marker=styles['无Graph']['marker'],
+            markersize=10,
+            linewidth=3,
+            linestyle=styles['无Graph']['line'],
+            label='无Graph（测试集）'
+        )
+        # 有Graph测试集
+        plt.plot(
+            test_x_pos,
+            test_results['有Graph'][metric_name],
+            color=styles['有Graph']['color'],
+            marker=styles['有Graph']['marker'],
+            markersize=10,
+            linewidth=3,
+            linestyle=styles['有Graph']['line'],
+            label='有Graph（测试集）'
+        )
+        
+        # ---------------- 图表美化与标注 ----------------
+        # 添加数值标签（训练集）
+        plt.text(
+            train_x_pos - 0.15,
+            train_results['无Graph'][metric_name] + 0.01,
+            "{:.4f}".format(train_results['无Graph'][metric_name]),  # 兼容写法
+            ha='center', va='bottom', fontsize=11, fontweight='bold'
+        )
+        plt.text(
+            train_x_pos + 0.15,
+            train_results['有Graph'][metric_name] + 0.01,
+            "{:.4f}".format(train_results['有Graph'][metric_name]),
+            ha='center', va='bottom', fontsize=11, fontweight='bold'
+        )
+        
+        # 添加数值标签（测试集）
+        for i, pos in enumerate(test_x_pos):
+            plt.text(
+                pos,
+                test_results['无Graph'][metric_name][i] + 0.01,
+                "{:.4f}".format(test_results['无Graph'][metric_name][i]),
+                ha='center', va='bottom', fontsize=10, color=styles['无Graph']['color']
+            )
+            plt.text(
+                pos,
+                test_results['有Graph'][metric_name][i] - 0.02,
+                "{:.4f}".format(test_results['有Graph'][metric_name][i]),
+                ha='center', va='top', fontsize=10, color=styles['有Graph']['color']
+            )
+        
+        # 修复：标题用字符串拼接替代f-string换行
+        title_train = ",".join(CONFIG["train_years"])
+        title_test = ",".join(CONFIG["test_years"])
+        plt.title(metric_name + "对比分析\n模型：" + DEFAULT_MODEL + " | 训练集：" + title_train + " | 测试集：" + title_test,
+                  fontsize=14, fontweight='bold', pad=20)
+        
+        plt.xlabel('数据类型与年份', fontsize=12)
+        plt.ylabel(metric_name, fontsize=12)
+        plt.xticks(range(len(all_x_labels)), all_x_labels, fontsize=11)
+        plt.ylim(0.5, 1.02)  # 固定y轴范围，增强可读性
+        plt.grid(axis='y', alpha=0.3, linestyle='--', linewidth=1)
+        plt.legend(fontsize=11, loc='lower right', framealpha=0.9)
+        
+        # 保存图片
+        save_path = os.path.join(CONFIG["out_root"], metric_name + "_有无Graph对比图.png")
         plt.tight_layout()
-        filename = f"结果图片/{chn_name}_{mode_key}.png"
-        plt.savefig(filename, dpi=500, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
-        print(f"已生成：{filename}")
+        print(f"已保存图表：{save_path}")
+
+# ================= 执行主程序 =================
+if __name__ == "__main__":
+    main()
